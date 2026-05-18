@@ -1,0 +1,105 @@
+stages:
+  - build
+  - lint
+  - test
+  - docker_build
+  - docker_push
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  APP_DIR: "app"
+  DOCKER_IMAGE: "${DOCKERHUB_USERNAME}/todo-api"
+  DOCKER_TLS_CERTDIR: "/certs"
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+default:
+  image: python:3.12-slim
+  cache:
+    key: "${CI_COMMIT_REF_SLUG}-pip"
+    paths:
+      - .cache/pip
+
+.install_deps: &install_deps
+  - cd "$APP_DIR"
+  - pip install --quiet -r requirements.txt -r requirements-dev.txt
+
+build:
+  stage: build
+  script:
+    - *install_deps
+    - python -m compileall -q src
+
+lint:
+  stage: lint
+  script:
+    - *install_deps
+    - ruff check src tests
+
+test:
+  stage: test
+  script:
+    - *install_deps
+    - >
+      pytest
+      --cov=src
+      --cov-report=term-missing
+      --cov-report=xml:coverage.xml
+      --cov-report=html:htmlcov
+      --cov-fail-under=50
+  coverage: '/^TOTAL\s+\d+\s+\d+\s+(\d+)%/'
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: app/coverage.xml
+    paths:
+      - app/coverage.xml
+      - app/htmlcov/
+    expire_in: 1 week
+
+.docker_job: &docker_job
+  image: docker:24-cli
+  services:
+    - docker:24-dind
+
+docker_build:
+  <<: *docker_job
+  stage: docker_build
+  needs:
+    - build
+    - lint
+    - test
+  script:
+    - docker build -t "${DOCKER_IMAGE}:${CI_COMMIT_SHORT_SHA}" -f app/Dockerfile app/
+    - docker save "${DOCKER_IMAGE}:${CI_COMMIT_SHORT_SHA}" -o image.tar
+  artifacts:
+    paths:
+      - image.tar
+    expire_in: 1 day
+
+docker_push:
+  <<: *docker_job
+  stage: docker_push
+  needs:
+    - job: docker_build
+      artifacts: true
+    - build
+    - lint
+    - test
+  script:
+    - docker load -i image.tar
+    - echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+    - docker push "${DOCKER_IMAGE}:${CI_COMMIT_SHORT_SHA}"
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        docker tag "${DOCKER_IMAGE}:${CI_COMMIT_SHORT_SHA}" "${DOCKER_IMAGE}:latest"
+        docker push "${DOCKER_IMAGE}:latest"
+      fi
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
