@@ -6,11 +6,13 @@ from src.models.task import TaskCreate, TaskPriority, TaskUpdate
 
 
 def test_task_create_defaults():
-    task = TaskCreate(title="Buy milk")
+    '''task = TaskCreate(title="Buy milk")
 
     assert task.priority == TaskPriority.MEDIUM
     assert task.completed is False
-    assert task.description is None
+    assert task.description is None'''
+
+    assert False
 
 
 def test_task_create_rejects_empty_title():
